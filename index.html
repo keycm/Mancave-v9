@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Wave/Cascade Image Effect</title>
+    
+    <style>
+        /* BASE STYLES & ROOT VARIABLES */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --transition: cubic-bezier(0.1, 0.7, 0, 1);
+        }
+
+        body {
+            /* Example background from the original tutorial */
+            background: linear-gradient(90deg, black, #333); 
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            font-family: sans-serif;
+            overflow: hidden; /* Prevent horizontal scroll on 3D transform */
+        }
+
+        /* WRAPPER AND 3D CONTEXT */
+        .wrapper {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 40vh; /* Adjust height as needed */
+        }
+
+        .imgs-parent {
+            display: flex;
+            gap: 0.4rem;
+            /* This is the key to the 3D viewing context */
+            perspective: 60rem; 
+        }
+
+        /* INDIVIDUAL IMAGE CARD STYLES */
+        .img {
+            width: 8.0rem;
+            height: 19rem;
+            background-size: cover;
+            background-position: center;
+            cursor: pointer;
+            transition: transform 1.25s var(--transition), filter 3s var(--transition), width 0.3s var(--transition);
+            position: relative;
+            filter: grayscale(0) brightness(0.7);
+            will-change: transform, filter;
+            border-radius: 8px;
+            /* Ensures the hover effect works smoothly */
+            transform-style: preserve-3d; 
+            backface-visibility: hidden;
+        }
+
+        /* CONTENT OVERLAY STYLES */
+        .content {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            padding: 10px;
+            color: white;
+            text-align: center;
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.3s ease, visibility 0.3s ease;
+        }
+
+        h3 {
+            font-size: 14px !important;
+            margin-bottom: 5px;
+        }
+
+        .btn {
+            display: inline-block;
+            padding: 4px 10px;
+            background-image: linear-gradient(140deg, #0071E3 42%, #25409E 100%);
+            color: white;
+            text-decoration: none;
+            font-size: 12px;
+            font-weight: 600;
+            border-radius: 15px;
+        }
+
+        /* HOVER / OPEN EFFECTS */
+        .img:hover .content,
+        .img.open .content {
+            opacity: 1;
+            visibility: visible;
+        }
+        
+        /* HOVER/CLICK: Bring the central image forward */
+        .img:hover,
+        .img.open {
+            transform: translateZ(17.375rem);
+            filter: grayscale(0) brightness(0.9);
+            z-index: 10; /* Ensure the active card is on top */
+        }
+        
+        /* ====================================
+           THE CORE WAVE EFFECT (CSS Sibling Selectors) 
+           ==================================== */
+
+        /* SUCCEEDING SIBLINGS (Elements to the right of the hovered element) */
+        .img:hover + * {
+            transform: translateZ(14.77rem) rotateY(35deg);
+            filter: grayscale(0.2) brightness(0.9);
+            z-index: -1;
+        }
+
+        .img:hover + * + * {
+            transform: translateZ(9.73rem) rotateY(40deg);
+            filter: grayscale(0.4) brightness(0.8);
+            z-index: -2;
+        }
+
+        .img:hover + * + * + * {
+            transform: translateZ(4.17rem) rotateY(35deg);
+            filter: grayscale(0.6) brightness(0.7);
+            z-index: -3;
+        }
+
+        .img:hover + * + * + * + * {
+            transform: translateZ(1.1rem) rotateY(25deg);
+            filter: grayscale(0.8) brightness(0.6);
+            z-index: -4;
+        }
+
+        /* PRECEDING SIBLINGS (Elements to the left of the hovered element - uses :has) */
+        /* Note: :has() is currently not fully supported by all major browsers (e.g., Firefox) */
+        .img:has(+ :hover),
+        .img:has(+ .open) {
+            transform: translateZ(14.77rem) rotateY(-35deg);
+            filter: grayscale(0.2) brightness(0.9);
+        }
+
+        .img:has(+ * + :hover),
+        .img:has(+ * + .open) {
+            transform: translateZ(9.73rem) rotateY(-40deg);
+            filter: grayscale(0.4) brightness(0.8);
+        }
+
+        .img:has(+ * + * + :hover),
+        .img:has(+ * + * + .open) {
+            transform: translateZ(4.17rem) rotateY(-35deg);
+            filter: grayscale(0.6) brightness(0.7);
+        }
+
+        .img:has(+ * + * + * + :hover),
+        .img:has(+ * + * + * + .open) {
+            transform: translateZ(1.1rem) rotateY(-25deg);
+            filter: grayscale(0.8) brightness(0.6);
+        }
+
+        /* The 'open' class for persistent click expansion */
+        .img.open {
+            width: 25vw; /* Expands the width greatly on click */
+            z-index: 11;
+            margin: 0 0.45vw;
+        }
+
+        /* MEDIA QUERY */
+        @media (max-width: 820px) {
+            .img {
+                width: 4.0rem;
+                height: 15rem; /* Slightly smaller on mobile */
+            }
+            .img.open {
+                width: 20vw;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="wrapper">
+        <div class="imgs-parent">
+            
+            <div class="img" style="background-image: url('https://picsum.photos/200/300?random=1');">
+                <div class="content">
+                    <h3>Project Alpha</h3>
+                    <a href="#" class="btn">View</a>
+                </div>
+            </div>
+            
+            <div class="img" style="background-image: url('https://picsum.photos/200/300?random=2');">
+                <div class="content">
+                    <h3>Project Beta</h3>
+                    <a href="#" class="btn">View</a>
+                </div>
+            </div>
+            
+            <div class="img" style="background-image: url('https://picsum.photos/200/300?random=3');">
+                <div class="content">
+                    <h3>Project Gamma</h3>
+                    <a href="#" class="btn">View</a>
+                </div>
+            </div>
+            
+            <div class="img" style="background-image: url('https://picsum.photos/200/300?random=4');">
+                <div class="content">
+                    <h3>Project Delta</h3>
+                    <a href="#" class="btn">View</a>
+                </div>
+            </div>
+            
+            <div class="img" style="background-image: url('https://picsum.photos/200/300?random=5');">
+                <div class="content">
+                    <h3>Project Epsilon</h3>
+                    <a href="#" class="btn">View</a>
+                </div>
+            </div>
+			<div class="img" style="background-image: url('https://picsum.photos/200/300?random=6');">
+                <div class="content">
+                    <h3>Project Epsilon</h3>
+                    <a href="#" class="btn">View</a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // JAVASCRIPT FOR CLICK EXPANSION MANAGEMENT
+        document.addEventListener("DOMContentLoaded", function() {
+            document.body.addEventListener("click", (event) => {
+                // Use .closest('.img') to ensure we get the card element even if the content/button is clicked
+                const clickedElement = event.target.closest(".img"),
+                    imgs = document.querySelectorAll(".img");
+
+                // 1. If clicked outside an image, close all open images.
+                if (!clickedElement) {
+                    imgs.forEach((img) => img.classList.remove("open"));
+                    return;
+                }
+
+                // 2. If clicked on an image:
+                //    a. If it's already open, close it.
+                if (clickedElement.classList.contains("open")) {
+                    clickedElement.classList.remove("open");
+                    return;
+                }
+
+                //    b. Otherwise, close all others and open the clicked one.
+                imgs.forEach((img) => img.classList.remove("open"));
+                clickedElement.classList.add("open");
+            });
+        });
+    </script>
+
+</body>
+</html>
