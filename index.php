@@ -1,165 +1,16 @@
 <?php
 session_start();
 include 'config.php';
-
-// === AJAX HANDLER FOR FORGOT PASSWORD FLOW ===
-if (isset($_POST['ajax_action'])) {
-    header('Content-Type: application/json');
-    $action = $_POST['ajax_action'];
-    $response = ['status' => 'error', 'message' => 'An error occurred.'];
-
-    try {
-        if ($action === 'send_reset_otp') {
-            $email = $_POST['email'] ?? '';
-            
-            // Check if email exists
-            $stmt = $conn->prepare("SELECT id, username FROM users WHERE email = ?");
-            $stmt->bind_param("s", $email);
-            $stmt->execute();
-            $res = $stmt->get_result();
-            
-            if ($res->num_rows > 0) {
-                $user = $res->fetch_assoc();
-                $otp = random_int(100000, 999999);
-                $otp_hash = hash("sha256", $otp); // Hash OTP for security
-                $expiry = date("Y-m-d H:i:s", time() + 60 * 15); // 15 mins
-
-                // Update DB
-                $update = $conn->prepare("UPDATE users SET reset_token_hash = ?, reset_token_expires_at = ? WHERE id = ?");
-                $update->bind_param("ssi", $otp_hash, $expiry, $user['id']);
-                
-                if ($update->execute()) {
-                    // Send Email
-                    $mail = require __DIR__ . '/reset_mailer.php';
-                    $mail->setFrom("noreply@example.com", "ManCave Gallery");
-                    $mail->addAddress($email);
-                    $mail->Subject = "Password Reset OTP";
-                    $mail->isHTML(true);
-                    $mail->Body = "
-                        <h3>Password Reset Request</h3>
-                        <p>Hi " . htmlspecialchars($user['username']) . ",</p>
-                        <p>Your OTP code to reset your password is:</p>
-                        <h2 style='background: #eee; padding: 10px; display: inline-block;'>$otp</h2>
-                        <p>This code expires in 15 minutes.</p>
-                    ";
-                    $mail->send();
-                    $response = ['status' => 'success', 'message' => 'OTP sent to your email.'];
-                }
-            } else {
-                $response = ['status' => 'error', 'message' => 'Email not found.'];
-            }
-        } 
-        elseif ($action === 'verify_reset_otp') {
-            $email = $_POST['email'] ?? '';
-            $otp = $_POST['otp'] ?? '';
-            $otp_hash = hash("sha256", $otp);
-
-            $stmt = $conn->prepare("SELECT id FROM users WHERE email = ? AND reset_token_hash = ? AND reset_token_expires_at > NOW()");
-            $stmt->bind_param("ss", $email, $otp_hash);
-            $stmt->execute();
-            if ($stmt->get_result()->num_rows > 0) {
-                $response = ['status' => 'success', 'message' => 'OTP verified.'];
-            } else {
-                $response = ['status' => 'error', 'message' => 'Invalid or expired OTP.'];
-            }
-        }
-        elseif ($action === 'reset_password') {
-            $email = $_POST['email'] ?? '';
-            $otp = $_POST['otp'] ?? '';
-            $new_pass = $_POST['new_password'] ?? '';
-            $confirm_pass = $_POST['confirm_password'] ?? '';
-            $otp_hash = hash("sha256", $otp);
-
-            if ($new_pass !== $confirm_pass) {
-                $response = ['status' => 'error', 'message' => 'Passwords do not match.'];
-            } elseif (strlen($new_pass) < 8) {
-                $response = ['status' => 'error', 'message' => 'Password must be at least 8 characters.'];
-            } else {
-                // Verify OTP again before updating
-                $stmt = $conn->prepare("SELECT id FROM users WHERE email = ? AND reset_token_hash = ? AND reset_token_expires_at > NOW()");
-                $stmt->bind_param("ss", $email, $otp_hash);
-                $stmt->execute();
-                
-                if ($stmt->get_result()->num_rows > 0) {
-                    $new_hash = password_hash($new_pass, PASSWORD_DEFAULT);
-                    $update = $conn->prepare("UPDATE users SET password = ?, reset_token_hash = NULL, reset_token_expires_at = NULL WHERE email = ?");
-                    $update->bind_param("ss", $new_hash, $email);
-                    if ($update->execute()) {
-                        $response = ['status' => 'success', 'message' => 'Password reset successfully.'];
-                    }
-                } else {
-                    $response = ['status' => 'error', 'message' => 'Session expired. Please try again.'];
-                }
-            }
-        }
-    } catch (Exception $e) {
-        $response = ['status' => 'error', 'message' => 'Server error: ' . $e->getMessage()];
-    }
-    
-    echo json_encode($response);
-    exit;
-}
-
 require_once __DIR__ . '/reset_mailer.php'; 
-
-// === NEW: HANDLE RATING SUBMISSION ===
-if (isset($_POST['submit_rating']) && isset($_SESSION['user_id'])) {
-    $booking_id = intval($_POST['booking_id']);
-    $rating = intval($_POST['rating']);
-    $review = trim($_POST['review']);
-    $user_id = $_SESSION['user_id'];
-
-    // 1. Verify this booking belongs to user, is completed, and not rated
-    $chk_sql = "SELECT id, service FROM bookings WHERE id = ? AND user_id = ? AND status = 'completed' AND is_rated = 0 LIMIT 1";
-    $chk_stmt = $conn->prepare($chk_sql);
-    $chk_stmt->bind_param("ii", $booking_id, $user_id);
-    $chk_stmt->execute();
-    $chk_res = $chk_stmt->get_result();
-
-    if ($row = $chk_res->fetch_assoc()) {
-        // 2. Try to map service name to service_id
-        $service_name = $row['service'];
-        $service_id = null;
-        
-        if (!empty($service_name)) {
-            $s_stmt = $conn->prepare("SELECT id FROM services WHERE name = ? LIMIT 1");
-            $s_stmt->bind_param("s", $service_name);
-            $s_stmt->execute();
-            $s_res = $s_stmt->get_result();
-            if ($s_row = $s_res->fetch_assoc()) {
-                $service_id = $s_row['id'];
-            }
-        }
-
-        // 3. Insert Rating
-        $ins_sql = "INSERT INTO ratings (user_id, service_id, rating, review, created_at) VALUES (?, ?, ?, ?, NOW())";
-        $ins_stmt = $conn->prepare($ins_sql);
-        $ins_stmt->bind_param("iiis", $user_id, $service_id, $rating, $review);
-        
-        if ($ins_stmt->execute()) {
-            // 4. Mark booking as rated
-            $upd_stmt = $conn->prepare("UPDATE bookings SET is_rated = 1 WHERE id = ?");
-            $upd_stmt->bind_param("i", $booking_id);
-            $upd_stmt->execute();
-            
-            $_SESSION['success_message'] = "Thank you for your feedback!";
-        } else {
-            $_SESSION['error_message'] = "Error saving review.";
-        }
-    }
-    // Refresh to clear post data
-    header("Location: index.php");
-    exit();
-}
 
 // === FETCH USER DATA (Profile Pic & Favorites) ===
 $user_favorites = [];
 $user_profile_pic = ""; 
-$rate_booking = null; // Booking waiting for rating
 
 if (isset($_SESSION['user_id'])) {
     $uid = $_SESSION['user_id'];
     
+    // 1. Fetch Favorites
     $fav_sql = "SELECT artwork_id FROM favorites WHERE user_id = $uid";
     if ($fav_res = mysqli_query($conn, $fav_sql)) {
         while($r = mysqli_fetch_assoc($fav_res)){
@@ -167,22 +18,17 @@ if (isset($_SESSION['user_id'])) {
         }
     }
 
+    // 2. Fetch Profile Image (Added image_path to query)
     $user_sql = "SELECT username, email, image_path FROM users WHERE id = $uid"; 
     $user_res = mysqli_query($conn, $user_sql);
     
     if ($user_data = mysqli_fetch_assoc($user_res)) {
+        // Logic: Use uploaded image if exists, else fallback to UI Avatar
         if (!empty($user_data['image_path'])) {
             $user_profile_pic = 'uploads/' . $user_data['image_path'];
         } else {
             $user_profile_pic = "https://ui-avatars.com/api/?name=" . urlencode($user_data['username']) . "&background=cd853f&color=fff&rounded=true&bold=true";
         }
-    }
-
-    // Check for Completed & Unrated Bookings
-    $rate_sql = "SELECT * FROM bookings WHERE user_id = $uid AND status = 'completed' AND is_rated = 0 ORDER BY created_at DESC LIMIT 1";
-    $rate_res = mysqli_query($conn, $rate_sql);
-    if ($rate_res && mysqli_num_rows($rate_res) > 0) {
-        $rate_booking = mysqli_fetch_assoc($rate_res);
     }
 }
 
@@ -198,62 +44,6 @@ if (isset($_GET['get_artist_data'])) {
     exit;
 }
 
-// === NEW: ACCOUNT VERIFICATION LOGIC (OTP) ===
-if (isset($_POST['verify_account'])) {
-    $otp_input = trim($_POST['otp']);
-    $email = $_SESSION['otp_email'] ?? '';
-
-    if (empty($email)) {
-        $_SESSION['error_message'] = "Session expired. Please sign up again.";
-    } elseif (empty($otp_input)) {
-        $_SESSION['error_message'] = "Please enter the code.";
-        $_SESSION['show_verify_modal'] = true; // Keep modal open
-    } else {
-        // Check DB
-        $stmt = $conn->prepare("SELECT id, account_activation_hash, reset_token_expires_at FROM users WHERE email = ?");
-        $stmt->bind_param("s", $email);
-        $stmt->execute();
-        $user_res = $stmt->get_result();
-        $user = $user_res->fetch_assoc();
-
-        if (!$user) {
-            $_SESSION['error_message'] = "Account not found.";
-        } elseif ($user['account_activation_hash'] == NULL) {
-            $_SESSION['success_message'] = "Account already verified. Please Login.";
-            unset($_SESSION['otp_email']);
-            header("Location: index.php?login=1");
-            exit;
-        } else {
-            // Validate OTP and Expiry
-            $expiry = strtotime($user['reset_token_expires_at']);
-            
-            if (time() > $expiry) {
-                $_SESSION['error_message'] = "Code expired. Please register again.";
-            } elseif ($user['account_activation_hash'] !== $otp_input) {
-                $_SESSION['error_message'] = "Incorrect code. Try again.";
-                $_SESSION['show_verify_modal'] = true; // Keep modal open
-            } else {
-                // Success: Activate Account
-                $upd = $conn->prepare("UPDATE users SET account_activation_hash = NULL, reset_token_expires_at = NULL WHERE id = ?");
-                $upd->bind_param("i", $user['id']);
-                
-                if ($upd->execute()) {
-                    $_SESSION['success_message'] = "Account verified! Please login.";
-                    unset($_SESSION['otp_email']);
-                    unset($_SESSION['show_verify_modal']);
-                    header("Location: index.php?login=1");
-                    exit;
-                } else {
-                    $_SESSION['error_message'] = "Database error.";
-                }
-            }
-        }
-    }
-    // If we reach here, reload (usually with error and modal flag set)
-    header("Location: index.php");
-    exit;
-}
-
 // === LOGIN LOGIC ===
 if (isset($_POST['login'])) {     
     $identifier = $_POST['identifier'];     
@@ -266,17 +56,16 @@ if (isset($_POST['login'])) {
     if ($result && mysqli_num_rows($result) === 1) {
         $row = mysqli_fetch_assoc($result);
         if (!empty($row['account_activation_hash'])) {
-            $_SESSION['error_message'] = "Account not activated. Enter the code sent to your email.";
+            $_SESSION['error_message'] = "Account not activated. Check your email for OTP.";
             $_SESSION['otp_email'] = $row['email'];
-            $_SESSION['show_verify_modal'] = true; // Open Verify Modal
-            header("Location: index.php");
+            header("Location: verify_otp.php");
             exit();
         }
         if (password_verify($password, $row['password'])) {
             $_SESSION['username'] = $row['username'];
             $_SESSION['user_id'] = $row['id'];
             $_SESSION['role'] = $row['role'];
-            header("Location: " . ($row['role'] == 'admin' ? 'admin.php' : './')); 
+            header("Location: " . ($row['role'] == 'admin' ? 'admin.php' : 'index.php'));
             exit();
         } else {
             $_SESSION['error_message'] = "Invalid password!";
@@ -285,7 +74,7 @@ if (isset($_POST['login'])) {
         $_SESSION['error_message'] = "User not found!";
     }
     if(isset($_SESSION['error_message'])) {
-        header("Location: ./?login=1");
+        header("Location: index.php?login=1");
         exit();
     }
 } 
@@ -328,13 +117,12 @@ if (isset($_POST['sign'])) {
                     $mail->addAddress($email);
                     $mail->Subject = "Account Activation OTP";
                     $mail->isHTML(true);
-                    $mail->Body = "<h3>Welcome to ManCave!</h3><p>Your activation code is: <b style='font-size:1.2em'>$otp</b></p>";
+                    $mail->Body = "<h3>Welcome to ManCave!</h3><p>Your activation code is: <b>$otp</b></p>";
                     try {
                         $mail->send();
                         $_SESSION['otp_email'] = $email;
-                        $_SESSION['success_message'] = "Registration successful! Check your email for the code.";
-                        $_SESSION['show_verify_modal'] = true; 
-                        header("Location: index.php"); 
+                        $_SESSION['success_message'] = "Registration successful! Check email for OTP.";
+                        header("Location: verify_otp.php"); 
                         exit;
                     } catch (Exception $e) {
                         $_SESSION['error_message'] = "Mailer Error: " . $mail->ErrorInfo;
@@ -346,44 +134,74 @@ if (isset($_POST['sign'])) {
         }
     }
     if(isset($_SESSION['error_message'])) {
-        header("Location: ./?signup=1");
+        header("Location: index.php?signup=1");
         exit();
     }
 }
 
-// === DATA FETCHING ===
+// === DATA FETCHING (With Updated Limits) ===
 $loggedIn = isset($_SESSION['username']);
+
+// 1. Fetch Artworks (Latest Arrivals - LIMIT 3)
 $seven_days_ago = date('Y-m-d', strtotime('-7 days'));
 $artworks = [];
 
-// [MODIFIED] Added fav_count to the query and used ORDER BY RAND()
 $sql_art = "SELECT a.*, 
-            (SELECT status FROM bookings b WHERE (b.artwork_id = a.id OR b.service = a.title) AND b.status IN ('approved', 'completed') ORDER BY b.id DESC LIMIT 1) as active_booking_status,
-            (SELECT COUNT(*) FROM favorites f WHERE f.artwork_id = a.id) as fav_count
+            (
+                SELECT status 
+                FROM bookings b 
+                WHERE (b.artwork_id = a.id OR b.service = a.title) 
+                AND b.status IN ('approved', 'completed') 
+                ORDER BY b.id DESC LIMIT 1
+            ) as active_booking_status
             FROM artworks a
-            WHERE (SELECT COUNT(*) FROM bookings b2 WHERE (b2.artwork_id = a.id OR b2.service = a.title) AND b2.status = 'completed' AND b2.preferred_date < '$seven_days_ago') = 0
-            ORDER BY RAND() LIMIT 3";
+            WHERE (
+                SELECT COUNT(*) 
+                FROM bookings b2
+                WHERE (b2.artwork_id = a.id OR b2.service = a.title)
+                AND b2.status = 'completed' 
+                AND b2.preferred_date < '$seven_days_ago'
+            ) = 0
+            ORDER BY active_booking_status DESC, a.status ASC, a.id DESC 
+            LIMIT 3";
 
 $res_art = mysqli_query($conn, $sql_art);
 if ($res_art) { while ($row = mysqli_fetch_assoc($res_art)) { $artworks[] = $row; } }
 
+// 2. Fetch Artists (Meet Our Artists - LIMIT 6)
 $artists_list = [];
 $sql_artists = "SELECT * FROM artists ORDER BY id DESC LIMIT 6";
-if ($res_artists = mysqli_query($conn, $sql_artists)) { while ($row = mysqli_fetch_assoc($res_artists)) { $artists_list[] = $row; } }
+if ($res_artists = mysqli_query($conn, $sql_artists)) { 
+    while ($row = mysqli_fetch_assoc($res_artists)) { $artists_list[] = $row; } 
+}
 
+// 3. Fetch Services (Gallery Services - LIMIT 3)
 $services_list = [];
 $sql_services = "SELECT * FROM services ORDER BY id ASC LIMIT 3";
-if ($res_services = mysqli_query($conn, $sql_services)) { while ($row = mysqli_fetch_assoc($res_services)) { $services_list[] = $row; } }
+if ($res_services = mysqli_query($conn, $sql_services)) { 
+    while ($row = mysqli_fetch_assoc($res_services)) { $services_list[] = $row; } 
+}
 
+// 4. Fetch Events (Upcoming Events - LIMIT 2)
 $events_list = [];
 $sql_events = "SELECT * FROM events ORDER BY event_date ASC LIMIT 2";
-if ($res_events = mysqli_query($conn, $sql_events)) { while ($row = mysqli_fetch_assoc($res_events)) { $events_list[] = $row; } }
+if ($res_events = mysqli_query($conn, $sql_events)) { 
+    while ($row = mysqli_fetch_assoc($res_events)) { $events_list[] = $row; } 
+}
 
-// FETCH TESTIMONIALS (Ratings)
+// 5. Fetch Client Stories (LIMIT 3)
 $reviews_list = [];
-// [MODIFIED] Changed LIMIT to 4 to show 4 rows as requested
-$sql_review = "SELECT r.*, u.username FROM ratings r JOIN users u ON r.user_id = u.id WHERE r.rating >= 4 ORDER BY RAND() LIMIT 4";
-if ($res_review = mysqli_query($conn, $sql_review)) { while ($row = mysqli_fetch_assoc($res_review)) { $reviews_list[] = $row; } }
+$sql_review = "SELECT r.*, u.username, s.name as service_name 
+               FROM ratings r 
+               JOIN users u ON r.user_id = u.id 
+               LEFT JOIN services s ON r.service_id = s.id
+               WHERE r.rating >= 4 
+               ORDER BY RAND() LIMIT 3";
+if ($res_review = mysqli_query($conn, $sql_review)) {
+    while ($row = mysqli_fetch_assoc($res_review)) {
+        $reviews_list[] = $row;
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -399,14 +217,44 @@ if ($res_review = mysqli_query($conn, $sql_review)) { while ($row = mysqli_fetch
     <link rel="stylesheet" href="style.css">
     <link href="https://unpkg.com/aos@2.3.1/dist/aos.css" rel="stylesheet">
     <style>
-        /* === EXISTING STYLES === */
+        /* ========================================== */
+        /* === CRITICAL FIX: OVERFLOW PREVENTION === */
+        /* ========================================== */
+        html, body {
+            width: 100%;
+            max-width: 100vw;
+            overflow-x: hidden !important;
+            margin: 0;
+            padding: 0;
+        }
+
+        /* Ensures sections don't expand page width */
+        section {
+            overflow-x: hidden;
+            width: 100%;
+        }
+
+        /* Bootstrap row negative margin fix */
+        .row {
+            margin-right: 0;
+            margin-left: 0;
+        }
+        
+        /* ========================================== */
+        /* === HEADER ICONS & STYLES === */
+        /* ========================================== */
         .user-dropdown.active .dropdown-content { display: block; animation: fadeIn 0.2s ease-out; }
         .notification-wrapper { position: relative; margin-left: 0; display: inline-block; }
-        .notif-dropdown { display: none; position: absolute; right: -10px; top: 160%; width: 320px; background: white; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,0.15); border: 1px solid #eee; z-index: 1100; overflow: hidden; transform-origin: top right; animation: fadeIn 0.2s ease-out; }
+        
+        .notif-dropdown { display: none; position: absolute; right: -50px; top: 160%; width: 300px; background: white; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,0.15); border: 1px solid #eee; z-index: 1100; overflow: hidden; transform-origin: top right; animation: fadeIn 0.2s ease-out; }
         @keyframes fadeIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
         .notif-dropdown.active { display: block; }
         .notif-header { padding: 15px; border-bottom: 1px solid #f0f0f0; display: flex; justify-content: space-between; align-items: center; font-weight: 800; background: #fafafa; font-size: 0.95rem; color: var(--primary); }
+        .small-btn { border: none; background: none; font-size: 0.8rem; cursor: pointer; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: 0.5px; }
+        .small-btn:hover { color: var(--accent-hover); }
+        
         .notif-list { max-height: 350px; overflow-y: auto; list-style: none; margin: 0; padding: 0; }
+        
         .notif-item { padding: 15px 35px 15px 15px; border-bottom: 1px solid #f9f9f9; font-size: 0.9rem; transition: 0.2s; cursor: pointer; display: flex; flex-direction: column; gap: 5px; position: relative; }
         .notif-item:hover { background: #fdfbf7; }
         .notif-item.unread { background: #fff8f0; border-left: 4px solid var(--accent); }
@@ -415,13 +263,17 @@ if ($res_review = mysqli_query($conn, $sql_review)) { while ($row = mysqli_fetch
         .notif-msg { color: #444; line-height: 1.4; }
         .notif-time { font-size: 0.75rem; color: #999; font-weight: 600; }
         .no-notif { padding: 30px; text-align: center; color: #999; font-style: italic; }
-        .nav-actions { display: flex; align-items: center; gap: 15px; }
+        
+        /* Icons Styling */
+        .nav-actions { display: flex; align-items: center; gap: 12px; }
         .header-icon-btn { background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2); width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; font-size: 1.1rem; cursor: pointer; transition: all 0.3s ease; position: relative; }
         .header-icon-btn:hover { background: rgba(255, 255, 255, 0.2); color: var(--accent); transform: translateY(-2px); }
         .navbar.scrolled .header-icon-btn { background: #f8f8f8; border-color: #eee; color: var(--primary); }
         .navbar.scrolled .header-icon-btn:hover { background: #fff; box-shadow: 0 4px 10px rgba(0,0,0,0.1); color: var(--accent); }
         .notif-badge { position: absolute; top: -2px; right: -2px; background: var(--brand-red); color: white; font-size: 0.65rem; font-weight: bold; padding: 2px 5px; border-radius: 50%; min-width: 18px; text-align: center; border: 2px solid rgba(255,255,255,0.2); }
         .navbar.scrolled .notif-badge { border-color: #fff; }
+        
+        /* Profile Pill */
         .profile-pill { display: flex; align-items: center; gap: 10px; background: rgba(255, 255, 255, 0.1); padding: 4px 15px 4px 4px; border-radius: 50px; border: 1px solid rgba(255, 255, 255, 0.2); cursor: pointer; transition: all 0.3s ease; }
         .profile-pill:hover { background: rgba(255, 255, 255, 0.2); }
         .navbar.scrolled .profile-pill { background: #f8f8f8; border-color: #eee; }
@@ -430,7 +282,7 @@ if ($res_review = mysqli_query($conn, $sql_review)) { while ($row = mysqli_fetch
         .profile-name { font-weight: 700; font-size: 0.9rem; color: white; padding-right: 5px; }
         .navbar.scrolled .profile-name { color: var(--primary); }
         
-        /* UPDATED HEART ANIMATION */
+        /* === ANIMATIONS & CARD === */
         @keyframes heartPump { 0% { transform: scale(1); } 50% { transform: scale(1.4); } 100% { transform: scale(1); } }
         @keyframes popBtn { 0% { transform: scale(1); } 50% { transform: scale(0.9); } 100% { transform: scale(1); } }
         .btn-heart.animating i { animation: heartPump 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
@@ -447,7 +299,61 @@ if ($res_review = mysqli_query($conn, $sql_review)) { while ($row = mysqli_fetch
         .wave-card:hover .content, .wave-card.open .content { opacity: 1; }
         .wave-card:hover + *, .wave-card.open + * { transform: translateZ(30px) rotateY(15deg); z-index: 5; }
         .wave-card:hover + * + *, .wave-card.open + * + * { transform: translateZ(10px) rotateY(10deg); z-index: 4; }
-        @media (max-width: 768px) { .wave-wrapper { height: auto; padding: 40px 0; } .wave-parent { flex-direction: column; gap: 20px; } .wave-card { width: 90%; height: 300px; transform: none !important; filter: none !important; } .wave-card:hover, .wave-card.open { width: 95%; transform: scale(1.02) !important; } .wave-card .content { opacity: 1; } }
+        
+        /* === ARTIST SECTION RESPONSIVE FIX === */
+        @media (max-width: 768px) { 
+            /* Adjust wrapper to allow horizontal scrolling */
+            .wave-wrapper { 
+                height: auto; 
+                padding: 40px 0; 
+                overflow-x: auto; /* Allow horizontal scroll */
+                overflow-y: hidden;
+                -webkit-overflow-scrolling: touch; /* Smooth scroll on iOS */
+                scroll-behavior: smooth;
+                justify-content: flex-start; /* Start from left */
+                scrollbar-width: none; /* Hide scrollbar Firefox */
+            }
+            
+            /* Hide scrollbar Chrome/Safari/Webkit */
+            .wave-wrapper::-webkit-scrollbar {
+                display: none;
+            }
+
+            /* Make parent a row, not column */
+            .wave-parent { 
+                display: flex;
+                flex-direction: row; 
+                gap: 20px; 
+                padding: 0 20px; /* Padding for left/right edge */
+                width: max-content; /* Allow container to grow sideways */
+            } 
+
+            /* Card Styling for "Friend UI" / Slider Look */
+            .wave-card { 
+                width: 75vw !important; /* Auto size - Show 75% of card so next one peeks */
+                max-width: 300px; /* Don't get too big on tablets */
+                height: 400px; 
+                flex-shrink: 0; /* Prevent shrinking */
+                transform: none !important; 
+                filter: none !important; 
+                border-radius: 15px;
+                box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+                margin: 0;
+                scroll-snap-align: center; /* Snap to center when scrolling */
+            } 
+            
+            /* Interaction */
+            .wave-card:hover, .wave-card.open { 
+                width: 75vw !important; /* Keep same size */
+                transform: scale(1.02) !important; 
+            } 
+            
+            /* Always show content on mobile */
+            .wave-card .content { 
+                opacity: 1; 
+                background: linear-gradient(to top, rgba(0,0,0,0.8), transparent);
+            } 
+        }
 
         :root { --accent-orange: #f36c21; --transition: cubic-bezier(0.1, 0.7, 0, 1); }
         .latest-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 40px 30px; padding-bottom: 40px; }
@@ -480,6 +386,7 @@ if ($res_review = mysqli_query($conn, $sql_review)) { while ($row = mysqli_fetch
         .btn-circle.disabled { border-color: #ccc; color: #ccc; cursor: not-allowed; }
         .btn-circle.disabled:hover { background: transparent; color: #ccc; }
 
+        /* Modal Fixes */
         .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); backdrop-filter: blur(5px); display: flex; align-items: center; justify-content: center; opacity: 0; visibility: hidden; transition: 0.3s; z-index: 2000; padding: 20px; }
         .modal-overlay.active { opacity: 1; visibility: visible; }
         .modal-card { background: #fff; padding: 30px; border-radius: 12px; width: 550px; max-width: 100%; max-height: 90vh; overflow-y: auto; position: relative; transform: translateY(20px); transition: 0.3s; box-shadow: 0 15px 50px rgba(0,0,0,0.4); display: flex; flex-direction: column; }
@@ -489,21 +396,22 @@ if ($res_review = mysqli_query($conn, $sql_review)) { while ($row = mysqli_fetch
         .modal-card::-webkit-scrollbar-track { background: #f9f9f9; }
         .modal-close { position: absolute; top: 15px; right: 20px; background: none; border: none; font-size: 1.8rem; cursor: pointer; color: #999; transition: 0.2s; z-index: 10; }
         .modal-close:hover { color: #333; transform: rotate(90deg); }
-        .btn-full { width: 100%; background: var(--primary); color: #fff; padding: 14px; border-radius: 8px; border: none; font-weight: 700; cursor: pointer; font-size: 1rem; transition: 0.3s; margin-top: 10px; }
+        .btn-full { width: 100%; background: var(--primary); color: var(--white); padding: 16px; border-radius: 10px; border: none; font-weight: 800; cursor: pointer; font-size: 1.1rem; transition: 0.3s; }
+        .modal-footer-link { text-align: center; margin-top: 15px; font-size: 0.95rem; }
+        .modal-footer-link a { color: var(--accent); font-weight: 700; }
         
-        /* [UPDATED] Testimonial Box Style */
         .testimonial-box { 
             background: #f9f9f9; 
             border-radius: 12px; 
             padding: 40px; 
-            border: 1px solid #e0e0e0; /* Added Border */
+            border: 1px solid #e0e0e0; 
             height: 100%; 
             display: flex; 
             flex-direction: column; 
             justify-content: center;
         }
         
-        /* Modal Styles */
+        /* Small Auth Modal */
         .modal-card.small { width: 420px; max-width: 95%; padding: 45px 35px; text-align: center; border-radius: 20px; box-shadow: 0 20px 60px rgba(0,0,0,0.15); }
         .modal-header-icon { font-size: 3rem; color: var(--accent-orange); margin-bottom: 20px; background: rgba(243, 108, 33, 0.1); width: 80px; height: 80px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; }
         .modal-card.small h3 { font-family: var(--font-head); font-size: 1.8rem; margin-bottom: 10px; color: var(--primary); }
@@ -515,20 +423,108 @@ if ($res_review = mysqli_query($conn, $sql_review)) { while ($row = mysqli_fetch
         .friendly-input-group input:focus + i { color: var(--accent-orange); }
         .btn-friendly { width: 100%; padding: 15px; border-radius: 50px; border: none; background: linear-gradient(135deg, var(--accent-orange), #ff8c42); color: #fff; font-weight: 800; font-size: 1rem; cursor: pointer; transition: 0.3s; margin-top: 10px; box-shadow: 0 4px 15px rgba(243, 108, 33, 0.3); }
         .btn-friendly:hover { transform: translateY(-2px); box-shadow: 0 8px 25px rgba(243, 108, 33, 0.4); }
-        .modal-footer-link { margin-top: 25px; font-size: 0.9rem; color: #777; }
-        .modal-footer-link a { color: var(--accent-orange); font-weight: 700; }
         .alert-error { background: #ffe6e6; color: #d63031; padding: 12px; border-radius: 12px; font-size: 0.9rem; margin-bottom: 20px; border: 1px solid #fab1a0; }
-        
         .form-group label { display: block; margin-bottom: 5px; font-weight: 600; font-size: 0.9rem; color: #555; }
         .form-group input:not(.friendly-input-group input), .form-group textarea { width: 100%; padding: 12px 15px; border: 1px solid #ddd; border-radius: 8px; margin-bottom: 15px; }
         .forgot-pass-link { text-decoration: none; color: #888; font-size: 0.85rem; font-weight: 600; transition: color 0.3s ease; }
         .forgot-pass-link:hover { color: var(--accent-orange); }
-
-        /* Rating Stars */
         .star-rating { display: flex; flex-direction: row-reverse; justify-content: center; gap: 5px; margin-bottom: 20px; }
         .star-rating input { display: none; }
         .star-rating label { font-size: 2rem; color: #ddd; cursor: pointer; transition: color 0.2s; }
         .star-rating label:hover, .star-rating label:hover ~ label, .star-rating input:checked ~ label { color: #f39c12; }
+
+        /* === BURGER MENU & RESPONSIVE === */
+        .mobile-menu-icon { display: none; font-size: 1.6rem; cursor: pointer; color: var(--white); margin-left: 15px; }
+        .navbar.scrolled .mobile-menu-icon { color: var(--primary); }
+
+        @media (max-width: 768px) {
+            .navbar { background: var(--white); padding: 12px 0; border-bottom: 1px solid #eee; }
+            .nav-container { padding: 0 15px; position: relative; justify-content: space-between; }
+            
+            .logo { display: flex; flex-direction: column; align-items: center; line-height: 1; }
+            .logo-main { font-size: 1.4rem !important; transform: rotate(0deg) !important; margin: 2px 0 !important; }
+            .logo-top { font-size: 0.7rem; }
+            .logo-bottom { font-size: 0.6rem; }
+            .logo-text { color: var(--primary); } 
+            .logo-top, .logo-bottom { color: var(--primary); }
+            
+            /* Scrolled State Logo for Mobile - Keep compact */
+            .navbar.scrolled .logo { flex-direction: column; align-items: center; gap: 0; }
+            .navbar.scrolled .logo-main { font-size: 1.4rem; transform: rotate(0deg); padding: 0; }
+            .navbar.scrolled .logo-top { font-size: 0.7rem; }
+            .navbar.scrolled .logo-bottom { font-size: 0.6rem; }
+
+            /* Menu links logic */
+            .nav-links { 
+                display: none; 
+                position: absolute; 
+                top: 100%; left: 0; width: 100%; 
+                background: white; 
+                flex-direction: column; 
+                gap: 0; 
+                box-shadow: 0 10px 20px rgba(0,0,0,0.1);
+                padding: 0;
+                animation: fadeIn 0.3s ease;
+            }
+            .nav-links.active { display: flex; }
+            .nav-links li { width: 100%; border-bottom: 1px solid #f5f5f5; }
+            .nav-links a { display: block; padding: 15px 20px; color: var(--primary); text-align: center; }
+            
+            /* Mobile Header Icons Row */
+            .nav-actions { gap: 8px; align-items: center; }
+            .header-icon-btn { background: #f8f8f8; border-color: #eee; color: var(--primary); width: 35px; height: 35px; font-size: 1rem; }
+            .notif-badge { border-color: #fff; }
+
+            /* Convert Profile Pill to Icon */
+            .profile-pill { 
+                padding: 0; border: none; background: transparent; 
+                width: 35px; height: 35px; 
+                justify-content: center; 
+            }
+            .profile-pill:hover { background: transparent; }
+            .profile-name, .profile-pill .fa-chevron-down { display: none; } 
+            .profile-img { 
+                width: 35px; height: 35px; 
+                border: 2px solid var(--accent-orange); 
+            }
+
+            .mobile-menu-icon { display: block; color: var(--primary); }
+
+            /* Blank space fix specific */
+            .hero { height: auto; min-height: 100vh; }
+            .row { display: flex; flex-wrap: wrap; }
+            .col-6 { width: 100%; max-width: 100%; padding: 0; margin-bottom: 30px; }
+            .image-stack { height: 300px; }
+            
+            /* === RESPONSIVE FOOTER UPDATES === */
+            .footer-grid {
+                grid-template-columns: 1fr; /* Stack columns */
+                gap: 40px; /* Add breathing room */
+                text-align: center; /* Center everything */
+            }
+            
+            .footer-about p {
+                margin: 0 auto 20px auto; /* Center the about text */
+            }
+            
+            .footer-logo {
+                justify-content: center; /* Center logo row */
+                margin-bottom: 15px;
+            }
+            
+            .socials {
+                justify-content: center; /* Center icons */
+                display: flex;
+            }
+            
+            .footer-links h4, .footer-contact h4 {
+                margin-bottom: 15px; /* Slightly tighter spacing */
+            }
+            
+            .footer-contact p {
+                justify-content: center; /* Center contact items */
+            }
+        }
     </style>
 </head>
 <body>
@@ -541,7 +537,7 @@ if ($res_review = mysqli_query($conn, $sql_review)) { while ($row = mysqli_fetch
                 </span>
                 <span class="logo-bottom">GALLERY</span>
             </a>
-            <ul class="nav-links">
+            <ul class="nav-links" id="navLinks">
                 <li><a href="#home">Home</a></li>
                 <li><a href="#gallery">Collection</a></li>
                 <li><a href="#artists">Artists</a></li>
@@ -582,8 +578,9 @@ if ($res_review = mysqli_query($conn, $sql_review)) { while ($row = mysqli_fetch
                     <button id="openSignupBtn" class="btn-nav-outline">Sign Up</button>
                     <button id="openLoginBtn" class="btn-nav">Sign In</button>
                 <?php endif; ?>
+                
+                <div class="mobile-menu-icon" onclick="toggleMobileMenu()"><i class="fas fa-bars"></i></div>
             </div>
-            <div class="mobile-menu-icon"><i class="fas fa-bars"></i></div>
         </div>
     </nav>
 
@@ -1169,6 +1166,12 @@ if ($res_review = mysqli_query($conn, $sql_review)) { while ($row = mysqli_fetch
     <script>
         AOS.init({ duration: 800, offset: 50 });
 
+        // --- BURGER MENU TOGGLE ---
+        function toggleMobileMenu() {
+            const navLinks = document.getElementById('navLinks');
+            navLinks.classList.toggle('active');
+        }
+
         // --- GLOBAL VARIABLES & MODALS ---
         const loginModal = document.getElementById('loginModal');
         const signupModal = document.getElementById('signupModal');
@@ -1495,6 +1498,49 @@ if ($res_review = mysqli_query($conn, $sql_review)) { while ($row = mysqli_fetch
                 clickedCard.classList.add("open");
                 event.stopPropagation();
             });
+        
+            // --- AUTO SLIDING SCRIPT FOR ARTISTS ---
+            const wrapper = document.querySelector('.wave-wrapper');
+            const parent = document.querySelector('.wave-parent');
+
+            if (wrapper && parent) {
+                // Calculate width of one set of cards (including gaps)
+                // We assume all cards are same width + gap.
+                // Or just measure scrollWidth before cloning.
+                const originalScrollWidth = parent.scrollWidth;
+
+                // Clone children for infinite loop effect
+                const children = Array.from(parent.children);
+                children.forEach(child => {
+                    const clone = child.cloneNode(true);
+                    clone.setAttribute('aria-hidden', 'true'); // Accessibility
+                    parent.appendChild(clone);
+                });
+
+                let isPaused = false;
+                let autoScrollSpeed = 0.5; // Adjust speed
+
+                function autoScroll() {
+                    if (!isPaused && window.innerWidth <= 768) { // Only run on mobile/tablet
+                        wrapper.scrollLeft += autoScrollSpeed;
+                        
+                        // If we have scrolled past the original set, reset to 0
+                        if (wrapper.scrollLeft >= originalScrollWidth) {
+                            // Snap back to start (seamless)
+                            // Subtract originalScrollWidth to maintain exact offset
+                            wrapper.scrollLeft -= originalScrollWidth;
+                        }
+                    }
+                    requestAnimationFrame(autoScroll);
+                }
+                
+                autoScroll();
+
+                wrapper.addEventListener('touchstart', () => { isPaused = true; });
+                wrapper.addEventListener('touchend', () => { setTimeout(() => { isPaused = false; }, 2000); });
+                wrapper.addEventListener('mouseenter', () => { isPaused = true; });
+                wrapper.addEventListener('mouseleave', () => { isPaused = false; });
+            }
         });
     </script>
 </body>
